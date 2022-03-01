@@ -96,12 +96,20 @@ workflows:
           requires:
             - npm
       - test-e2e-intl
+      - prepare-hermesc-build:
+          filters: *only_release_tags
       - build-hermesc-linux:
           filters: *only_release_tags
+          requires:
+            - prepare-hermesc-build
       - build-hermesc-macos:
           filters: *only_release_tags
+          requires:
+            - prepare-hermesc-build
       - build-hermesc-windows:
           filters: *only_release_tags
+          requires:
+            - prepare-hermesc-build
       - prepare-hermes-tarball:
           filters: *only_release_tags
           requires:
@@ -663,7 +671,6 @@ jobs:
             sudo cp /usr/bin/ninja /usr/bin/ninja.real
             # See top comment
             printf '%s\n' '#!/bin/sh' 'ninja.real -j4 "$@" || ninja.real -j1 "$@"' | sudo tee /usr/bin/ninja
-      - run: mkdir -p hermesc/linux
       # @nocommit TODO: Verify if we can use the same set of build_hermes_compiler commands on linux hosts. This is a copy of the linux job above.
       - run:
           name: Build Hermes for Linux
@@ -694,7 +701,6 @@ jobs:
           command: |
             brew install cmake ninja
             sudo gem install cocoapods
-      - run: mkdir -p hermesc/macos
       - build_hermes_compiler
       - run: cp -R $HERMES_WS_DIR/build_host_hermesc hermesc/macos
       - persist_to_workspace:
@@ -706,7 +712,6 @@ jobs:
     <<: *windows_defaults
     steps:
       - checkout
-      - run: mkdir -p hermesc/windows
       - build_hermes_compiler
       - store_artifacts:
           path: $HERMES_WS_DIR/build_host_hermesc
