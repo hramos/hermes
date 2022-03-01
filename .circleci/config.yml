@@ -15,21 +15,58 @@ orbs:
   android: circleci/android@1.0.3
   node: circleci/node@4.7.0
 
+references:
+  # Default settings for Apple jobs (apple-runtime, test-apple-runtime, build-apple-runtime, package-apple-runtime, test-macos, build-hermesc-macos)
+  apple_defaults: &apple_defaults
+    macos:
+      xcode: 12.4.0
+    working_directory: ~/hermes
+    environment:
+      - TERM: dumb
+      - HERMES_WS_DIR: /tmp/hermes
+      # Homebrew currently breaks while updating:
+      # https://discuss.circleci.com/t/brew-install-fails-while-updating/32992
+      - HOMEBREW_NO_AUTO_UPDATE: 1
+
+  # Default settings for Linux jobs (linux, test-linux, build-hermesc-linux)
+  linux_defaults: &linux_defaults
+    docker:
+      - image: debian:stretch
+    environment:
+      - HERMES_WS_DIR: /tmp/hermes
+      - TERM: dumb
+      - DEBIAN_FRONTEND: noninteractive
+
+  # Default settings for Windows jobs (windows, build-hermesc-windows)
+  windows_defaults: &windows_defaults
+    executor:
+      name: win/default
+      shell: powershell.exe
+    environment:
+      - HERMES_WS_DIR: 'C:\tmp\hermes'
+      - ICU_URL: "https://github.com/unicode-org/icu/releases/download/release-64-2/icu4c-64_2-Win64-MSVC2017.zip"
+      - MSBUILD_DIR: 'C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin'
+      - CMAKE_DIR: 'C:\Program Files\CMake\bin'
+
+  only_release_tags: &only_release_tags
+    branches:
+      ignore: /.*/
+    tags:
+      only: /hermes-[0-9]+-[0-9]+-[0-9]+-RNv[0-9]+(\.[0-9]+)*(\-rc([0-9]+)?)?-([A-Za-z0-9]+)+/
+    # The branches and tags filters are ANDed, and will make it
+    # so this job only runs when a specific tag is created.
+
 commands:
   build_hermes_compiler:
-    parameters:
-      build_directory:
-        type: string
-        default: ./build
     steps:
       - run:
           name: Build Hermes Compiler
           command: |
             cd "$HERMES_WS_DIR"
-            hermes/utils/build/configure.py ./<< parameters.build_directory >>
+            hermes/utils/build/configure.py ./build_host_hermesc
             # Build the Hermes compiler so that the cross compiler build can
             # access it to build the VM
-            cmake --build ./<< parameters.build_directory >> --target hermesc
+            cmake --build ./build_host_hermesc --target hermesc
 
 workflows:
   version: 2
@@ -59,60 +96,18 @@ workflows:
           requires:
             - npm
       - test-e2e-intl
-      - build-hermesc-for-releases:
-          filters:
-            branches:
-              ignore: /.*/
-            tags:
-              only: /hermes-[0-9]+-[0-9]+-[0-9]+-RNv[0-9]+(\.[0-9]+)*(\-rc([0-9]+)?)?-([A-Za-z0-9]+)+/
-          # The branches and tags filters are ANDed, and will make it
-          # so this job only runs when a specific tag is created.
       - build-hermesc-linux:
-          requires:
-            - build-hermesc-for-releases
+          filters: *only_release_tags
       - build-hermesc-macos:
-          requires:
-            - build-hermesc-for-releases
+          filters: *only_release_tags
       - build-hermesc-windows:
-          requires:
-            - build-hermesc-for-releases
+          filters: *only_release_tags
       - prepare-hermes-tarball:
+          filters: *only_release_tags
           requires:
             - build-hermesc-linux
             - build-hermesc-macos
             - build-hermesc-windows
-
-# Default settings for Apple jobs (apple-runtime, test-apple-runtime, build-apple-runtime, package-apple-runtime, test-macos, build-hermesc-macos)
-apple_defaults: &apple_defaults
-  macos:
-    xcode: 12.4.0
-  working_directory: ~/hermes
-  environment:
-    - TERM: dumb
-    - HERMES_WS_DIR: /tmp/hermes
-    # Homebrew currently breaks while updating:
-    # https://discuss.circleci.com/t/brew-install-fails-while-updating/32992
-    - HOMEBREW_NO_AUTO_UPDATE: 1
-
-# Default settings for Linux jobs (linux, test-linux, build-hermesc-linux)
-linux_defaults: &linux_defaults
-  docker:
-    - image: debian:stretch
-  environment:
-    - HERMES_WS_DIR: /tmp/hermes
-    - TERM: dumb
-    - DEBIAN_FRONTEND: noninteractive
-
-# Default settings for Windows jobs (windows, build-hermesc-windows)
-windows_defaults: &windows_defaults
-  executor:
-    name: win/default
-    shell: powershell.exe
-  environment:
-    - HERMES_WS_DIR: 'C:\tmp\hermes'
-    - ICU_URL: "https://github.com/unicode-org/icu/releases/download/release-64-2/icu4c-64_2-Win64-MSVC2017.zip"
-    - MSBUILD_DIR: 'C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin'
-    - CMAKE_DIR: 'C:\Program Files\CMake\bin'
 
 jobs:
   android:
@@ -560,8 +555,7 @@ jobs:
             sudo cp /usr/bin/ninja /usr/bin/ninja.real
             # See top comment
             printf '%s\n' '#!/bin/sh' 'ninja.real -j4 "$@" || ninja.real -j1 "$@"' | sudo tee /usr/bin/ninja
-      - build_hermes_compiler:
-          build_directory: ./build_host_hermesc
+      - build_hermes_compiler
       - run:
           name: Build Hermes with Emscripten
           command: |
@@ -637,9 +631,7 @@ jobs:
           additional-emulator-args: -timezone Europe/Paris
           test-command: ./gradlew :intltest:prepareTests && ./gradlew -Pabis=x86 :intltest:connectedAndroidTest
 
-  # @nocommit TODO: Dummy job to be used for filtering purposes. Here to placate Circle CI validation.
-  # Move any common prerequesite steps here.
-  build-hermesc-for-releases:
+  prepare-hermesc-build:
     docker:
       - image: debian:stretch
     steps:
@@ -671,6 +663,8 @@ jobs:
             sudo cp /usr/bin/ninja /usr/bin/ninja.real
             # See top comment
             printf '%s\n' '#!/bin/sh' 'ninja.real -j4 "$@" || ninja.real -j1 "$@"' | sudo tee /usr/bin/ninja
+      - run: mkdir -p hermesc/linux
+      # @nocommit TODO: Verify if we can use the same set of build_hermes_compiler commands on linux hosts. This is a copy of the linux job above.
       - run:
           name: Build Hermes for Linux
           command: |
@@ -700,8 +694,8 @@ jobs:
           command: |
             brew install cmake ninja
             sudo gem install cocoapods
-      - build_hermes_compiler:
-          build_directory: ./build_host_hermesc
+      - run: mkdir -p hermesc/macos
+      - build_hermes_compiler
       - run: cp -R $HERMES_WS_DIR/build_host_hermesc hermesc/macos
       - persist_to_workspace:
           root: hermesc
@@ -712,8 +706,8 @@ jobs:
     <<: *windows_defaults
     steps:
       - checkout
-      - build_hermes_compiler:
-          build_directory: ./build_host_hermesc
+      - run: mkdir -p hermesc/windows
+      - build_hermes_compiler
       - store_artifacts:
           path: $HERMES_WS_DIR/build_host_hermesc
           destination: hermesc-windows
@@ -730,4 +724,7 @@ jobs:
       - checkout
       - attach_workspace:
           at: /tmp/workspace
-      # @nocommit TODO: Package tarball with source code and all three hermesc variants
+      # @nocommit TODO: Package tarball with source code and all three hermesc variants. This needs to be tested on Circle CI before landing.
+      - run: tar -czvf hermes.tar.gz /tmp/workspace .
+      - store_artifacts:
+          path: hermes.tar.gz
